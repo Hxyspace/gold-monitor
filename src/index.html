@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <title>Gold</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+        html, body { background: transparent; overflow: hidden; width: 100%; height: 100%; }
+        .box {
+            background: rgba(116, 115, 113, 0.88);
+            border: 1px solid rgba(255, 215, 0, 0.25);
+            border-radius: 6px;
+            padding: 3px 6px;
+            width: 100%; height: 100%;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            gap: 1px;
+            cursor: move;
+            -webkit-app-region: drag;
+        }
+        .p {
+            font: bold 13px Consolas, monospace;
+            color: #ffd700;
+        }
+    </style>
+</head>
+<body>
+<div class="box">
+    <span class="p" id="xau">--</span>
+    <span class="p" id="au9999">--</span>
+    <span class="p" id="paxg">--</span>
+</div>
+<script>
+const els = { xau: document.getElementById("xau"), au9999: document.getElementById("au9999"), paxg: document.getElementById("paxg") };
+(async function init() {
+    try {
+        await window.__TAURI__.event.listen("price-update", e => {
+            for (const [k, el] of Object.entries(els)) {
+                if (e.payload[k] > 0) el.textContent = e.payload[k].toFixed(2);
+            }
+        });
+    } catch { setTimeout(init, 1000); }
+})();
+</script>
+</body>
+</html>

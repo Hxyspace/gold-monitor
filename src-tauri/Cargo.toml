@@ -1,0 +1,17 @@
+[package]
+name = "gold-monitor"
+version = "1.0.0"
+edition = "2021"
+
+[lib]
+name = "gold_monitor_lib"
+crate-type = ["lib", "cdylib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["blocking", "rustls-tls"], default-features = false }
+dirs = "5"
