@@ -17,9 +17,9 @@ static CLICKTHROUGH: AtomicBool = AtomicBool::new(false);
 static CONFIG: Mutex<Option<serde_json::Value>> = Mutex::new(None);
 
 fn config_file() -> PathBuf {
-    let mut p = dirs::config_dir().unwrap_or_else(|| PathBuf::from("."));
-    p.push("gold-monitor");
-    let _ = fs::create_dir_all(&p);
+    let mut p = std::env::current_exe().ok()
+        .and_then(|e| e.parent().map(|d| d.to_path_buf()))
+        .unwrap_or_else(|| PathBuf::from("."));
     p.push("config.json");
     p
 }
