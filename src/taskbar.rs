@@ -1,4 +1,4 @@
-use std::sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Mutex};
+﻿use std::sync::{atomic::{AtomicBool, AtomicU32, Ordering}, Mutex};
 use windows::core::*;
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Direct2D::Common::*;
@@ -17,7 +17,6 @@ use windows::Win32::UI::Controls::*;
 static VISIBLE: AtomicBool = AtomicBool::new(false);
 static THREAD_ID: AtomicU32 = AtomicU32::new(0);
 pub static PRICES: Mutex<(f64, f64, f64)> = Mutex::new((0.0, 0.0, 0.0));
-static ON_HIDE: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
 
 const WND_WIDTH: i32 = 66;
 const WM_APP_QUIT: u32 = WM_APP + 1;
@@ -26,10 +25,6 @@ const WM_APP_HIDE: u32 = WM_APP + 3;
 const WM_APP_SHOW: u32 = WM_APP + 4;
 const TIMER_RECLAIM: usize = 2;
 const RECLAIM_DELAY_MS: u32 = 600_000;
-
-pub fn set_on_hide(f: impl Fn() + Send + 'static) {
-    *ON_HIDE.lock().unwrap() = Some(Box::new(f));
-}
 
 pub fn toggle() {
     if VISIBLE.load(Ordering::Relaxed) {
@@ -69,12 +64,6 @@ fn hide() {
     let tid = THREAD_ID.load(Ordering::Relaxed);
     if tid != 0 {
         unsafe { let _ = PostThreadMessageW(tid, WM_APP_HIDE, WPARAM(0), LPARAM(0)); }
-    }
-}
-
-fn notify_hidden() {
-    if let Some(cb) = ON_HIDE.lock().unwrap().as_ref() {
-        cb();
     }
 }
 
@@ -274,13 +263,13 @@ unsafe fn relay_tooltip_event(tip_hwnd: HWND, msg: &MSG) {
     SendMessageW(tip_hwnd, TTM_RELAYEVENT, WPARAM(0), LPARAM(msg as *const _ as isize));
 }
 
-unsafe fn hide_taskbar(hwnd: HWND) {
-    let _ = ShowWindow(hwnd, SW_HIDE);
-    VISIBLE.store(false, Ordering::Relaxed);
-    notify_hidden();
-    // Start delayed resource reclaim
-    SetTimer(hwnd, TIMER_RECLAIM, RECLAIM_DELAY_MS, None);
-}
+// fn hide_taskbar(hwnd: HWND) {
+//     unsafe {
+//         let _ = ShowWindow(hwnd, SW_HIDE);
+//         VISIBLE.store(false, Ordering::Relaxed);
+//         SetTimer(hwnd, TIMER_RECLAIM, RECLAIM_DELAY_MS, None);
+//     }
+// }
 
 unsafe fn run_taskbar_window_inner() -> Result<()> {
     let class_name = wide("GoldTaskbarDComp");
@@ -353,7 +342,7 @@ unsafe fn run_taskbar_window_inner() -> Result<()> {
                 break;
             } else if msg.message == WM_APP_HIDE {
                 let _ = ShowWindow(hwnd, SW_HIDE);
-                notify_hidden();
+                VISIBLE.store(false, Ordering::Relaxed);
                 // Start delayed resource reclaim timer
                 SetTimer(hwnd, TIMER_RECLAIM, RECLAIM_DELAY_MS, None);
                 continue;
@@ -385,31 +374,25 @@ unsafe fn run_taskbar_window_inner() -> Result<()> {
             relay_tooltip_event(tip_hwnd, &msg);
         }
 
-        // Pop tooltip on right-click (before hide)
-        if msg.message == WM_RBUTTONUP {
-            SendMessageW(tip_hwnd, TTM_POP, WPARAM(0), LPARAM(0));
-        }
-
         let _ = TranslateMessage(&msg);
         DispatchMessageW(&msg);
     }
 
     THREAD_ID.store(0, Ordering::Relaxed);
     VISIBLE.store(false, Ordering::Relaxed);
-    notify_hidden();
     Ok(())
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, _wp: WPARAM, _lp: LPARAM) -> LRESULT {
     match msg {
-        WM_RBUTTONUP => {
-            hide_taskbar(hwnd);
-            LRESULT(0)
-        }
+        // WM_RBUTTONUP => {
+        //     hide_taskbar(hwnd);
+        //     LRESULT(0)
+        // }
         WM_DESTROY => {
             PostQuitMessage(0);
             LRESULT(0)
         }
-        _ => DefWindowProcW(hwnd, msg, wp, lp),
+        _ => DefWindowProcW(hwnd, msg, _wp, _lp),
     }
 }
