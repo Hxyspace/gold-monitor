@@ -8,6 +8,8 @@ use tauri::{Emitter, Manager};
 use tauri::menu::{CheckMenuItem, Menu, MenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 
+mod taskbar;
+
 static CLICKTHROUGH: AtomicBool = AtomicBool::new(false);
 
 // --- 配置持久化 ---
@@ -98,6 +100,7 @@ pub fn run() {
 
             let visible = cfg["visible"].as_bool().unwrap_or(true);
             let clickthrough = cfg["clickthrough"].as_bool().unwrap_or(false);
+            let taskbar_visible = cfg["taskbar"].as_bool().unwrap_or(false);
             CLICKTHROUGH.store(clickthrough, Ordering::Relaxed);
 
             if let Some(win) = app.get_webview_window("main") {
@@ -122,8 +125,14 @@ pub fn run() {
             // 托盘菜单
             let show_item = CheckMenuItem::with_id(app, "show", "显示窗口", true, visible, None::<&str>)?;
             let click_item = CheckMenuItem::with_id(app, "clickthrough", "鼠标穿透", true, clickthrough, None::<&str>)?;
+            let taskbar_item = CheckMenuItem::with_id(app, "taskbar", "任务栏显示", true, taskbar_visible, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &click_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &click_item, &taskbar_item, &quit_item])?;
+
+            // Clone for use in on_hide callback
+            let taskbar_item_for_hide = taskbar_item.clone();
+            // Clone for use in menu event closure
+            let taskbar_item_for_menu = taskbar_item.clone();
 
             let _tray = TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
@@ -151,11 +160,17 @@ pub fn run() {
                                 update_config("clickthrough", serde_json::json!(new_val));
                             }
                         }
+                        "taskbar" => {
+                            taskbar::toggle();
+                            let is_vis = taskbar::is_visible();
+                            let _ = taskbar_item_for_menu.set_checked(is_vis);
+                            update_config("taskbar", serde_json::json!(is_vis));
+                        }
                         "quit" => app.exit(0),
                         _ => {}
                     }
                 })
-                .menu_on_left_click(false)
+                .show_menu_on_left_click(false)
                 .on_tray_icon_event(|tray, event| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = event {
                         if let Some(win) = tray.app_handle().get_webview_window("main") {
@@ -171,6 +186,17 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
+
+            // When taskbar hides via its own right-click menu, sync tray checkmark
+            taskbar::set_on_hide(move || {
+                let _ = taskbar_item_for_hide.set_checked(false);
+                update_config("taskbar", serde_json::json!(false));
+            });
+
+            // Restore taskbar state from config
+            if taskbar_visible {
+                taskbar::toggle();
+            }
 
             Ok(())
         })
