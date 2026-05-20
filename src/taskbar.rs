@@ -13,10 +13,13 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::Win32::UI::Controls::*;
+use crate::price::PriceData;
 
 static VISIBLE: AtomicBool = AtomicBool::new(false);
 static THREAD_ID: AtomicU32 = AtomicU32::new(0);
-pub static PRICES: Mutex<(f64, f64, f64)> = Mutex::new((0.0, 0.0, 0.0));
+pub static PRICES: Mutex<PriceData> = Mutex::new(PriceData {
+    xau: 0.0, au9999: 0.0, paxg: 0.0, dxy: 0.0, us10y: 0.0, us10y_chg: 0.0,
+});
 
 const WND_WIDTH: i32 = 66;
 const WM_APP_QUIT: u32 = WM_APP + 1;
@@ -38,8 +41,8 @@ pub fn is_visible() -> bool {
     VISIBLE.load(Ordering::Relaxed)
 }
 
-pub fn update_prices(xau: f64, au9999: f64, paxg: f64) {
-    *PRICES.lock().unwrap() = (xau, au9999, paxg);
+pub fn update_prices(data: PriceData) {
+    *PRICES.lock().unwrap() = data;
     if VISIBLE.load(Ordering::Relaxed) {
         let tid = THREAD_ID.load(Ordering::Relaxed);
         if tid != 0 {
@@ -176,8 +179,8 @@ impl DCompRenderer {
             None,
         )?;
 
-        let (xau, au9999, _paxg) = *PRICES.lock().unwrap();
-        let text = format!("$:{:8.2}\n\u{00A5}:{:8.2}", xau, au9999);
+        let prices = *PRICES.lock().unwrap();
+        let text = format!("$:{:8.2}\n\u{00A5}:{:8.2}", prices.xau, prices.au9999);
 
         let rect = D2D_RECT_F { left: 2.0, top: 0.0, right: self.width as f32, bottom: self.height as f32 };
         let s: Vec<u16> = text.encode_utf16().collect();
@@ -239,10 +242,17 @@ unsafe fn create_tooltip(hwnd: HWND) -> Result<HWND> {
 }
 
 unsafe fn update_tooltip_text(tip_hwnd: HWND, hwnd: HWND) {
-    let (xau, au9999, paxg) = *PRICES.lock().unwrap();
+    let prices = *PRICES.lock().unwrap();
+    let chg_str = if prices.us10y_chg >= 0.05 {
+        format!("+{:.0}bp", prices.us10y_chg)
+    } else if prices.us10y_chg <= -0.05 {
+        format!("-{:.0}bp", prices.us10y_chg.abs())
+    } else {
+        ".0".to_string()
+    };
     let text = format!(
-        "XA:{:8.2}$\r\nPA:{:8.2}$\r\nAU:{:8.2}\u{00A5}",
-        xau, paxg, au9999
+        "XA:{:8.2}$\r\nAU:{:8.2}\u{00A5}\r\nPA:{:8.2}$\r\nDX:{:8.2}\r\nY0:{:8.2}% {}",
+        prices.xau, prices.au9999, prices.paxg, prices.dxy, prices.us10y, chg_str
     );
     let tip_text = wide(&text);
 

@@ -15,11 +15,14 @@ static OVERLAY_VISIBLE: AtomicBool = AtomicBool::new(false);
 static CLICKTHROUGH: AtomicBool = AtomicBool::new(false);
 static OVERLAY_HWND: Mutex<Option<isize>> = Mutex::new(None);
 static OVERLAY_DPI: AtomicU32 = AtomicU32::new(96);
+static PREV_PRICES: Mutex<price::PriceData> = Mutex::new(price::PriceData {
+    xau: 0.0, au9999: 0.0, paxg: 0.0, dxy: 0.0, us10y: 0.0, us10y_chg: 0.0,
+});
 
 // Base dimensions at 96 DPI
-const BASE_W: i32 = 72;
-const BASE_H: i32 = 46;
-const BASE_FONT: f32 = 13.0;
+const BASE_W: i32 = 82;
+const BASE_H: i32 = 78;
+const BASE_FONT: f32 = 11.0;
 const RADIUS: f32 = 6.0;
 
 fn wide(s: &str) -> Vec<u16> {
@@ -116,7 +119,6 @@ unsafe fn run_overlay() {
         ex_style |= WS_EX_TRANSPARENT;
     }
 
-    // Create at base size first, then resize after getting DPI
     let hwnd = CreateWindowExW(
         ex_style,
         PCWSTR(class_name.as_ptr()),
@@ -129,7 +131,6 @@ unsafe fn run_overlay() {
         None,
     ).unwrap();
 
-    // Get actual DPI and resize
     let dpi = GetDpiForWindow(hwnd);
     let dpi = if dpi == 0 { 96 } else { dpi };
     OVERLAY_DPI.store(dpi, Ordering::Relaxed);
@@ -139,7 +140,6 @@ unsafe fn run_overlay() {
     *OVERLAY_HWND.lock().unwrap() = Some(hwnd.0 as isize);
     OVERLAY_VISIBLE.store(true, Ordering::Relaxed);
 
-    // Initial paint
     paint_layered(hwnd);
 
     let mut msg = MSG::default();
@@ -158,12 +158,10 @@ unsafe fn paint_layered(hwnd: HWND) {
     let dpi = OVERLAY_DPI.load(Ordering::Relaxed);
     let (w, h) = scaled_size(dpi);
 
-    // Create D2D factory
     let factory: ID2D1Factory = D2D1CreateFactory(
         D2D1_FACTORY_TYPE_SINGLE_THREADED, None,
     ).unwrap();
 
-    // Create DWrite factory
     let dwrite: IDWriteFactory = DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED).unwrap();
     let text_format = dwrite.CreateTextFormat(
         w!("Consolas"),
@@ -171,13 +169,12 @@ unsafe fn paint_layered(hwnd: HWND) {
         DWRITE_FONT_WEIGHT_BOLD,
         DWRITE_FONT_STYLE_NORMAL,
         DWRITE_FONT_STRETCH_NORMAL,
-        BASE_FONT, // DIPs - D2D1 handles scaling via DPI
+        BASE_FONT,
         w!(""),
     ).unwrap();
     let _ = text_format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
     let _ = text_format.SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 
-    // Create a compatible DC and 32-bit DIB
     let screen_dc = GetDC(None);
     let mem_dc = CreateCompatibleDC(screen_dc);
 
@@ -185,10 +182,10 @@ unsafe fn paint_layered(hwnd: HWND) {
         bmiHeader: BITMAPINFOHEADER {
             biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
             biWidth: w,
-            biHeight: -h, // top-down
+            biHeight: -h,
             biPlanes: 1,
             biBitCount: 32,
-            biCompression: 0, // BI_RGB
+            biCompression: 0,
             ..Default::default()
         },
         ..Default::default()
@@ -197,7 +194,6 @@ unsafe fn paint_layered(hwnd: HWND) {
     let dib = CreateDIBSection(mem_dc, &bmi, DIB_RGB_COLORS, &mut bits, None, 0).unwrap();
     let old_bmp = SelectObject(mem_dc, dib);
 
-    // Create D2D DC render target
     let props = D2D1_RENDER_TARGET_PROPERTIES {
         r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
         pixelFormat: D2D1_PIXEL_FORMAT {
@@ -215,11 +211,10 @@ unsafe fn paint_layered(hwnd: HWND) {
     rt.BeginDraw();
     rt.Clear(Some(&D2D1_COLOR_F { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }));
 
-    // All coordinates in DIPs (base size) - D2D1 scales via DPI setting
     let dip_w = BASE_W as f32;
     let dip_h = BASE_H as f32;
 
-    // Background rounded rect: rgba(116,115,113, 0.88)
+    // Background rounded rect
     let bg_brush = rt.CreateSolidColorBrush(
         &D2D1_COLOR_F { r: 116.0/255.0, g: 115.0/255.0, b: 113.0/255.0, a: 0.88 },
         None,
@@ -231,42 +226,62 @@ unsafe fn paint_layered(hwnd: HWND) {
     };
     rt.FillRoundedRectangle(&rounded, &bg_brush);
 
-    // Border: rgba(255,215,0, 0.3)
+    // Border
     let border_brush = rt.CreateSolidColorBrush(
         &D2D1_COLOR_F { r: 1.0, g: 215.0/255.0, b: 0.0, a: 0.3 },
         None,
     ).unwrap();
     rt.DrawRoundedRectangle(&rounded, &border_brush, 1.0, None);
 
-    // Text: gold #ffd700
-    let text_brush = rt.CreateSolidColorBrush(
+    // Gold color brush
+    let gold_brush = rt.CreateSolidColorBrush(
         &D2D1_COLOR_F { r: 1.0, g: 215.0/255.0, b: 0.0, a: 1.0 },
         None,
     ).unwrap();
+    // Cyan brush for DXY
+    let dxy_brush = rt.CreateSolidColorBrush(
+        &D2D1_COLOR_F { r: 0.4, g: 0.9, b: 1.0, a: 1.0 },
+        None,
+    ).unwrap();
+    // Light green brush for US10Y
+    let us10y_brush = rt.CreateSolidColorBrush(
+        &D2D1_COLOR_F { r: 0.5, g: 1.0, b: 0.5, a: 1.0 },
+        None,
+    ).unwrap();
 
-    let (xau, au9999, paxg) = *price::PRICES.lock().unwrap();
-    let lines = [
-        format!("{:.2}", xau),
-        format!("{:.2}", au9999),
-        format!("{:.2}", paxg),
+    let prices = *price::PRICES.lock().unwrap();
+
+    let lines: [(&str, &ID2D1SolidColorBrush, f64); 5] = [
+        ("XA", &gold_brush, prices.xau),
+        ("AU", &gold_brush, prices.au9999),
+        ("DX", &dxy_brush, prices.dxy),
+        ("Y0", &us10y_brush, prices.us10y),
+        ("PA", &gold_brush, prices.paxg),
     ];
 
-    // Equal spacing: gap = (H - 3*font) / 4
-    let gap = (dip_h - 3.0 * BASE_FONT) / 4.0;
-    for (i, line) in lines.iter().enumerate() {
-        let text_wide: Vec<u16> = line.encode_utf16().collect();
+    let n = lines.len() as f32;
+    let gap = (dip_h - n * BASE_FONT) / (n + 1.0);
+    for (i, (label, brush, val)) in lines.iter().enumerate() {
+        let text = if *label == "Y0" {
+            let chg = prices.us10y_chg;
+            let sign = if chg >= 0.05 { '+' } else if chg <= -0.05 { '-' } else { ' ' };
+            format!("{:<2} {:>7}", label, format!("{:.2}{}{:.0}", val, sign, chg.abs()))
+        } else {
+            format!("{:<2} {:>7.2}", label, val)
+        };
+        let text_wide: Vec<u16> = text.encode_utf16().collect();
         let top = gap + i as f32 * (BASE_FONT + gap);
         let layout_rect = D2D_RECT_F {
-            left: 4.0,
+            left: 3.0,
             top,
-            right: dip_w - 4.0,
+            right: dip_w - 3.0,
             bottom: top + BASE_FONT,
         };
         rt.DrawText(
             &text_wide,
             &text_format,
             &layout_rect,
-            &text_brush,
+            *brush,
             D2D1_DRAW_TEXT_OPTIONS_NONE,
             DWRITE_MEASURING_MODE_NATURAL,
         );
@@ -274,25 +289,25 @@ unsafe fn paint_layered(hwnd: HWND) {
 
     let _ = rt.EndDraw(None, None);
 
-    // UpdateLayeredWindow with per-pixel alpha
     let pt_src = POINT { x: 0, y: 0 };
     let size = SIZE { cx: w, cy: h };
     let blend = BLENDFUNCTION {
-        BlendOp: 0, // AC_SRC_OVER
+        BlendOp: 0,
         BlendFlags: 0,
         SourceConstantAlpha: 255,
-        AlphaFormat: 1, // AC_SRC_ALPHA
+        AlphaFormat: 1,
     };
     let _ = UpdateLayeredWindow(
         hwnd, screen_dc, None, Some(&size),
         mem_dc, Some(&pt_src), COLORREF(0), Some(&blend), ULW_ALPHA,
     );
 
-    // Cleanup
     SelectObject(mem_dc, old_bmp);
     let _ = DeleteObject(dib);
     let _ = DeleteDC(mem_dc);
     ReleaseDC(None, screen_dc);
+
+    *PREV_PRICES.lock().unwrap() = prices;
 }
 
 unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LPARAM) -> LRESULT {
@@ -300,7 +315,6 @@ unsafe extern "system" fn overlay_wnd_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp:
         WM_DPICHANGED => {
             let new_dpi = (wp.0 & 0xFFFF) as u32;
             OVERLAY_DPI.store(new_dpi, Ordering::Relaxed);
-            // Use the suggested rect from lp
             let suggested = &*(lp.0 as *const RECT);
             let _ = SetWindowPos(
                 hwnd, None,
